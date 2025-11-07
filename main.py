@@ -205,7 +205,7 @@ class VideoFrameExtractor(QMainWindow):
                 # Pillow로 WebP 저장 (알파채널 없음)
                 pil_image = Image.fromarray(frame_rgb)
                 pil_image = pil_image.convert('RGB')  # 알파채널 제거
-                pil_image.save(save_path, 'webp', quality=100)
+                pil_image.save(save_path, 'webp', quality=75)
 
                 QMessageBox.information(self, '성공', f'프레임이 저장되었습니다:\n{save_path}')
             except Exception as e:
