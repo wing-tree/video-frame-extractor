@@ -3,7 +3,7 @@ import cv2
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
-                             QFileDialog, QMessageBox)
+                             QFileDialog, QMessageBox, QScrollArea)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QDragEnterEvent, QDropEvent
 from PIL import Image
@@ -18,8 +18,10 @@ class VideoFrameExtractor(QMainWindow):
         self.total_frames = 0
         self.fps = 0
         self.video_path = None
+        self.last_frame_number = -1  # 마지막으로 읽은 프레임 번호 추가
 
         self.init_ui()
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def init_ui(self):
         self.setWindowTitle('비디오 프레임 추출기')
@@ -31,7 +33,6 @@ class VideoFrameExtractor(QMainWindow):
         layout = QVBoxLayout(main_widget)
 
         # 스크롤 영역 추가
-        from PyQt5.QtWidgets import QScrollArea
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(False)
         scroll_area.setAlignment(Qt.AlignCenter)
@@ -135,7 +136,10 @@ class VideoFrameExtractor(QMainWindow):
         self.total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.video_capture.get(cv2.CAP_PROP_FPS)
 
-        self.timeline_slider.setMaximum(self.total_frames - 1)
+        # 10ms 단위로 슬라이더 설정 (1초 = 100단위)
+        total_time_ms = int((self.total_frames / self.fps) * 100)  # 10ms 단위
+
+        self.timeline_slider.setMaximum(total_time_ms)
         self.timeline_slider.setEnabled(True)
         self.timeline_slider.setValue(0)
         self.capture_button.setEnabled(True)
@@ -146,11 +150,36 @@ class VideoFrameExtractor(QMainWindow):
         if not self.video_capture:
             return
 
-        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-        ret, frame = self.video_capture.read()
+        # 뒤로 가거나 너무 멀리 점프하면 처음부터
+        if frame_number < self.last_frame_number or \
+                (frame_number - self.last_frame_number) > 300:  # 300프레임 이상 차이나면 리셋
+            print(f"[INFO] 위치 리셋: {self.last_frame_number} -> {frame_number}")
+            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            self.last_frame_number = -1
 
-        if ret:
+        # 현재 위치에서 목표까지 순차 읽기
+        frame = None
+        ret = False
+
+        start = self.last_frame_number + 1
+        for i in range(start, frame_number + 1):
+            ret, frame = self.video_capture.read()
+            if not ret:
+                print(f"[ERROR] 프레임 {i} 읽기 실패! 처음부터 재시도")
+                # 실패하면 처음부터 다시
+                self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                self.last_frame_number = -1
+                for j in range(frame_number + 1):
+                    ret, frame = self.video_capture.read()
+                    if not ret:
+                        break
+                break
+
+        if ret and frame is not None:
             self.current_frame = frame
+            self.last_frame_number = frame_number
+
+            print(f"[DEBUG] 프레임 {frame_number} 추출 완료 (from {start})")
 
             # OpenCV BGR to RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -158,7 +187,6 @@ class VideoFrameExtractor(QMainWindow):
             bytes_per_line = ch * w
             qt_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
 
-            # 원본 크기로 표시 (스케일링 없음)
             pixmap = QPixmap.fromImage(qt_image)
             self.video_label.setPixmap(pixmap)
             self.video_label.resize(pixmap.size())
@@ -178,7 +206,36 @@ class VideoFrameExtractor(QMainWindow):
         return f'{hours:02d}:{minutes:02d}:{secs:02d}.{millisecs:03d}'
 
     def on_slider_change(self, value):
-        self.show_frame(value)
+        # 슬라이더 값(10ms 단위)을 프레임 번호로 변환
+        time_seconds = value / 100.0  # 10ms 단위 -> 초
+        frame_number = int(time_seconds * self.fps)
+        frame_number = min(frame_number, self.total_frames - 1)
+        self.show_frame(frame_number)
+
+    def keyPressEvent(self, event):
+        if not self.timeline_slider.isEnabled():
+            return
+
+        current_value = self.timeline_slider.value()
+
+        if event.key() == Qt.Key_Left:
+            # 왼쪽 화살표: 10ms 뒤로 (1단위)
+            new_value = max(0, current_value - 1)
+            self.timeline_slider.setValue(new_value)
+        elif event.key() == Qt.Key_Right:
+            # 오른쪽 화살표: 10ms 앞으로 (1단위)
+            new_value = min(self.timeline_slider.maximum(), current_value + 1)
+            self.timeline_slider.setValue(new_value)
+        elif event.key() == Qt.Key_Up:
+            # 위쪽 화살표: 1초 앞으로 (100단위)
+            new_value = min(self.timeline_slider.maximum(), current_value + 100)
+            self.timeline_slider.setValue(new_value)
+        elif event.key() == Qt.Key_Down:
+            # 아래쪽 화살표: 1초 뒤로 (100단위)
+            new_value = max(0, current_value - 100)
+            self.timeline_slider.setValue(new_value)
+        else:
+            super().keyPressEvent(event)
 
     def capture_frame(self):
         if self.current_frame is None:
@@ -207,7 +264,7 @@ class VideoFrameExtractor(QMainWindow):
                 pil_image = pil_image.convert('RGB')  # 알파채널 제거
                 pil_image.save(save_path, 'webp', quality=75)
 
-                QMessageBox.information(self, '성공', f'프레임이 저장되었습니다:\n{save_path}')
+                self.statusBar().showMessage(f'프레임 저장 완료: {save_path}', 1000)
             except Exception as e:
                 QMessageBox.critical(self, '오류', f'저장 실패:\n{str(e)}')
 
