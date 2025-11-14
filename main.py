@@ -264,7 +264,7 @@ class VideoFrameExtractor(QMainWindow):
                 pil_image = pil_image.convert('RGB')  # 알파채널 제거
                 pil_image.save(save_path, 'webp', quality=75)
 
-                self.statusBar().showMessage(f'프레임 저장 완료: {save_path}', 1000)
+                self.statusBar().showMessage(f'프레임 저장 완료: {save_path}', 1500)
             except Exception as e:
                 QMessageBox.critical(self, '오류', f'저장 실패:\n{str(e)}')
 
