@@ -127,19 +127,20 @@ class VideoFrameExtractor(QMainWindow):
         self.stats_list.setFont(font)
         self.stats_list.setStyleSheet("""
             QListWidget {
-                background-color: #f9f9f9;
-                border: 1px solid #ddd;
+                background-color: #1e1e1e;
+                border: 1px solid #444;
                 padding: 5px;
+                color: #e0e0e0;
             }
             QListWidget::item {
                 padding: 3px;
-                border-bottom: 1px solid #eee;
+                border-bottom: 1px solid #333;
             }
             QListWidget::item:hover {
-                background-color: #e3f2fd;
+                background-color: #2d2d2d;
             }
             QListWidget::item:selected {
-                background-color: #2196F3;
+                background-color: #0d47a1;
                 color: white;
             }
         """)
