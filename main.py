@@ -90,23 +90,20 @@ class VideoFrameExtractor(QMainWindow):
         self.capture_button = QPushButton('캡처 (WebP 저장)')
         self.capture_button.setEnabled(False)
         self.capture_button.clicked.connect(self.capture_frame)
-        self.stats_list.setStyleSheet("""
-            QListWidget {
-                background-color: #1e1e1e;
-                border: 1px solid #444;
-                padding: 5px;
-                color: #e0e0e0;
-            }
-            QListWidget::item {
-                padding: 3px;
-                border-bottom: 1px solid #333;
-            }
-            QListWidget::item:hover {
-                background-color: #2d2d2d;
-            }
-            QListWidget::item:selected {
-                background-color: #0d47a1;
+        self.capture_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
                 color: white;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
             }
         """)
         control_layout.addWidget(self.capture_button)
