@@ -281,7 +281,61 @@ class VideoFrameExtractor(QMainWindow):
             self.stats_list.addItem(item)
             return
 
-        # 타입별로 분류하고 크기 순으로 정렬
+        # ===== 전체 프레임 Top 15 추가 =====
+        header = QListWidgetItem("=" * 45)
+        header.setFlags(Qt.NoItemFlags)
+        self.stats_list.addItem(header)
+
+        all_frames_title = QListWidgetItem("전체 프레임 TOP 15 (용량 기준)")
+        all_frames_title.setFlags(Qt.NoItemFlags)
+        all_frames_title.setFont(QFont("Monospace", 11, QFont.Bold))
+        self.stats_list.addItem(all_frames_title)
+
+        header2 = QListWidgetItem("=" * 45)
+        header2.setFlags(Qt.NoItemFlags)
+        self.stats_list.addItem(header2)
+
+        # 전체 프레임을 크기 순으로 정렬
+        all_frames_sorted = []
+        for idx, info in enumerate(self.frame_info):
+            all_frames_sorted.append({
+                'index': idx,
+                'type': info['type'],
+                'size': info['size'],
+                'quality': info['quality']
+            })
+        all_frames_sorted.sort(key=lambda x: x['size'], reverse=True)
+
+        # 상위 15개 표시
+        for rank, frame in enumerate(all_frames_sorted[:15], 1):
+            idx = frame['index']
+            ftype = frame['type']
+            size = frame['size']
+            quality = frame['quality']
+
+            size_kb = size / 1024
+            time_str = self.format_time_short(idx)
+
+            # 타입별 이모지
+            emoji = {'I': '🟢', 'P': '🔵', 'B': '🟠'}.get(ftype, '⚪')
+
+            if quality is not None:
+                text = f"  {rank:2d}. {time_str} | {emoji}{ftype} {size_kb:7.2f}KB QP:{quality}"
+            else:
+                text = f"  {rank:2d}. {time_str} | {emoji}{ftype} {size_kb:7.2f}KB QP:NONE"
+
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, idx)
+            self.stats_list.addItem(item)
+
+        spacer = QListWidgetItem("")
+        spacer.setFlags(Qt.NoItemFlags)
+        self.stats_list.addItem(spacer)
+        spacer = QListWidgetItem("")
+        spacer.setFlags(Qt.NoItemFlags)
+        self.stats_list.addItem(spacer)
+
+        # ===== 타입별 분류 =====
         frames_by_type = {'I': [], 'P': [], 'B': []}
 
         for idx, info in enumerate(self.frame_info):
@@ -297,13 +351,12 @@ class VideoFrameExtractor(QMainWindow):
         for ftype in frames_by_type:
             frames_by_type[ftype].sort(key=lambda x: x['size'], reverse=True)
 
-        # 리스트 항목 생성
-        # 헤더
+        # 타입별 헤더
         header = QListWidgetItem("=" * 45)
-        header.setFlags(Qt.NoItemFlags)  # 클릭 불가
+        header.setFlags(Qt.NoItemFlags)
         self.stats_list.addItem(header)
 
-        title = QListWidgetItem("프레임 품질 순위 (용량 기준)")
+        title = QListWidgetItem("타입별 프레임 순위 (용량 기준)")
         title.setFlags(Qt.NoItemFlags)
         title.setFont(QFont("Monospace", 11, QFont.Bold))
         self.stats_list.addItem(title)
@@ -322,7 +375,7 @@ class VideoFrameExtractor(QMainWindow):
             frames = frames_by_type[ftype]
 
             # 타입 헤더
-            type_header = QListWidgetItem(f"{color_emoji} {label} TOP 10 (최고 품질)")
+            type_header = QListWidgetItem(f"{color_emoji} {label} TOP 15")
             type_header.setFlags(Qt.NoItemFlags)
             type_header.setFont(QFont("Monospace", 10, QFont.Bold))
             self.stats_list.addItem(type_header)
@@ -336,8 +389,8 @@ class VideoFrameExtractor(QMainWindow):
                 no_data.setFlags(Qt.NoItemFlags)
                 self.stats_list.addItem(no_data)
             else:
-                # 상위 10개만
-                top_frames = frames[:10]
+                # 상위 15개로 변경
+                top_frames = frames[:15]
 
                 # 평균 대비 계산
                 avg_size = self.avg_sizes.get(ftype, 1)
@@ -357,7 +410,7 @@ class VideoFrameExtractor(QMainWindow):
                         text = f"  {rank:2d}. {time_str} | {size_kb:7.2f}KB ({ratio:5.1f}%)"
 
                     item = QListWidgetItem(text)
-                    item.setData(Qt.UserRole, idx)  # 프레임 번호 저장
+                    item.setData(Qt.UserRole, idx)
                     self.stats_list.addItem(item)
 
             # 간격
@@ -393,7 +446,7 @@ class VideoFrameExtractor(QMainWindow):
                     # QP 순 정렬 (낮은 것부터)
                     frames.sort(key=lambda x: x['quality'])
 
-                    type_header = QListWidgetItem(f"{color_emoji} {label} TOP 10 (QP 기준)")
+                    type_header = QListWidgetItem(f"{color_emoji} {label} TOP 15 (QP 기준)")
                     type_header.setFlags(Qt.NoItemFlags)
                     type_header.setFont(QFont("Monospace", 10, QFont.Bold))
                     self.stats_list.addItem(type_header)
@@ -402,7 +455,7 @@ class VideoFrameExtractor(QMainWindow):
                     divider.setFlags(Qt.NoItemFlags)
                     self.stats_list.addItem(divider)
 
-                    top_frames = frames[:10]
+                    top_frames = frames[:15]
 
                     for rank, frame in enumerate(top_frames, 1):
                         idx = frame['index']
@@ -415,7 +468,7 @@ class VideoFrameExtractor(QMainWindow):
                         text = f"  {rank:2d}. {time_str} | QP:{quality:2d} ({size_kb:7.2f}KB)"
 
                         item = QListWidgetItem(text)
-                        item.setData(Qt.UserRole, idx)  # 프레임 번호 저장
+                        item.setData(Qt.UserRole, idx)
                         self.stats_list.addItem(item)
 
                     # 간격
