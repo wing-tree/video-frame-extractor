@@ -22,7 +22,7 @@ class VideoFrameExtractor(QMainWindow):
         self.fps = 0
         self.video_path = None
         self.last_frame_number = -1
-        self.frame_info = []  # 프레임 정보 리스트 (타입, 크기, QP)
+        self.frame_info = []  # 프레임 정보 리스트 (타입, 크기, QP, 참조여부)
         self.avg_sizes = {}  # 타입별 평균 크기
         self.sharpness_metrics = []  # 선명도 메트릭 리스트
 
@@ -128,6 +128,11 @@ class VideoFrameExtractor(QMainWindow):
         self.setup_list_widget(self.sharpness_list)
         self.tab_widget.addTab(self.sharpness_list, "🔍 선명도 기준")
 
+        # 탭 3: 참조 프레임
+        self.reference_list = QListWidget()
+        self.setup_list_widget(self.reference_list)
+        self.tab_widget.addTab(self.reference_list, "🎯 참조 프레임")
+
         right_layout.addWidget(self.tab_widget)
 
         # 스플리터에 추가
@@ -168,6 +173,8 @@ class VideoFrameExtractor(QMainWindow):
             }
         """)
         list_widget.itemClicked.connect(self.on_stats_item_clicked)
+        # 키보드로 항목 포커스 변경시에도 프레임 이동
+        list_widget.currentItemChanged.connect(self.on_stats_item_changed)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -197,12 +204,12 @@ class VideoFrameExtractor(QMainWindow):
         return laplacian_var
 
     def analyze_frame_quality(self, video_path):
-        """비디오의 모든 프레임 타입, 크기, QP, 선명도 분석"""
+        """비디오의 모든 프레임 타입, 크기, QP, 참조여부 분석"""
         cmd = [
             'ffprobe',
             '-select_streams', 'v:0',
             '-show_frames',
-            '-show_entries', 'frame=pict_type,pkt_size,quality',
+            '-show_entries', 'frame=pict_type,pkt_size,quality,key_frame',
             '-of', 'json',
             video_path
         ]
@@ -218,14 +225,21 @@ class VideoFrameExtractor(QMainWindow):
                 frame_type = frame.get('pict_type', '?')
                 frame_size = int(frame.get('pkt_size', 0))
                 quality = frame.get('quality')
+                key_frame = int(frame.get('key_frame', 0))
 
                 if quality is not None and not has_quality:
                     has_quality = True
 
+                # I-frame은 항상 참조 프레임
+                # P/B-frame도 크기가 평균보다 크면 참조 프레임일 가능성 높음
+                is_reference = (frame_type == 'I' or key_frame == 1)
+
                 info = {
                     'type': frame_type,
                     'size': frame_size,
-                    'quality': quality
+                    'quality': quality,
+                    'is_reference': is_reference,
+                    'key_frame': key_frame
                 }
                 frame_info.append(info)
 
@@ -233,8 +247,9 @@ class VideoFrameExtractor(QMainWindow):
             i_count = sum(1 for f in frame_info if f['type'] == 'I')
             p_count = sum(1 for f in frame_info if f['type'] == 'P')
             b_count = sum(1 for f in frame_info if f['type'] == 'B')
+            ref_count = sum(1 for f in frame_info if f['is_reference'])
 
-            print(f"[INFO] 프레임 분석 완료: I={i_count}, P={p_count}, B={b_count}")
+            print(f"[INFO] 프레임 분석 완료: I={i_count}, P={p_count}, B={b_count}, 참조={ref_count}")
 
             if has_quality:
                 print(f"[INFO] QP 값 지원됨")
@@ -252,6 +267,17 @@ class VideoFrameExtractor(QMainWindow):
             for ftype, sizes in sizes_by_type.items():
                 if sizes:
                     avg_sizes[ftype] = sum(sizes) / len(sizes)
+
+            # 평균 크기 기반으로 추가 참조 프레임 탐지
+            # P/B 프레임 중 평균보다 1.5배 이상 큰 것은 참조 프레임일 가능성
+            for info in frame_info:
+                if info['type'] in ['P', 'B'] and not info['is_reference']:
+                    avg = avg_sizes.get(info['type'], 0)
+                    if avg > 0 and info['size'] > avg * 1.5:
+                        info['is_reference'] = True
+
+            ref_count = sum(1 for f in frame_info if f['is_reference'])
+            print(f"[INFO] 크기 분석 후 참조 프레임: {ref_count}개")
 
             if avg_sizes:
                 print(f"[INFO] 평균 크기 - I: {avg_sizes.get('I', 0):.0f}B, "
@@ -319,11 +345,90 @@ class VideoFrameExtractor(QMainWindow):
         frame_number = item.data(Qt.UserRole)
 
         if frame_number is not None:
-            time_seconds = frame_number / self.fps if self.fps > 0 else 0
-            slider_value = int(time_seconds * 100)
-
             print(f"[INFO] 프레임 {frame_number}로 이동 ({self.format_time_short(frame_number)})")
-            self.timeline_slider.setValue(slider_value)
+            self.timeline_slider.setValue(frame_number)
+
+    def on_stats_item_changed(self, current, previous):
+        """리스트 항목 포커스 변경시 (키보드 방향키 등) 프레임 이동"""
+        if current is not None:
+            frame_number = current.data(Qt.UserRole)
+            if frame_number is not None:
+                print(f"[INFO] 프레임 {frame_number}로 이동 ({self.format_time_short(frame_number)})")
+                self.timeline_slider.setValue(frame_number)
+
+    def update_reference_stats(self):
+        """참조 프레임 통계 표시"""
+        self.reference_list.clear()
+
+        if not self.frame_info:
+            item = QListWidgetItem("프레임 분석 데이터가 없습니다.")
+            self.reference_list.addItem(item)
+            return
+
+        # 참조 프레임만 필터링
+        ref_frames = []
+        for idx, info in enumerate(self.frame_info):
+            if info.get('is_reference', False):
+                ref_frames.append({
+                    'index': idx,
+                    'type': info['type'],
+                    'size': info['size'],
+                    'quality': info['quality']
+                })
+
+        # 헤더
+        header = QListWidgetItem("=" * 65)
+        header.setFlags(Qt.NoItemFlags)
+        self.reference_list.addItem(header)
+
+        title = QListWidgetItem(f"참조 프레임 목록 (총 {len(ref_frames)}개)")
+        title.setFlags(Qt.NoItemFlags)
+        title.setFont(QFont("Monospace", 12, QFont.Bold))
+        self.reference_list.addItem(title)
+
+        subtitle = QListWidgetItem("(다른 프레임의 기점이 되는 프레임)")
+        subtitle.setFlags(Qt.NoItemFlags)
+        self.reference_list.addItem(subtitle)
+
+        header2 = QListWidgetItem("=" * 65)
+        header2.setFlags(Qt.NoItemFlags)
+        self.reference_list.addItem(header2)
+
+        spacer = QListWidgetItem("")
+        spacer.setFlags(Qt.NoItemFlags)
+        self.reference_list.addItem(spacer)
+
+        # 참조 프레임 출력
+        for rank, frame in enumerate(ref_frames, 1):
+            idx = frame['index']
+            ftype = frame['type']
+            size = frame['size']
+            quality = frame['quality']
+
+            size_kb = size / 1024
+            time_str = self.format_time_short(idx)
+
+            avg_size = self.avg_sizes.get(ftype, 1)
+            ratio = (size / avg_size) * 100 if avg_size > 0 else 100
+
+            # 참조 프레임은 별 아이콘 추가
+            if ftype == 'I':
+                emoji = '⭐🟢'
+            elif ftype == 'P':
+                emoji = '⭐🔵'
+            elif ftype == 'B':
+                emoji = '⭐🟠'
+            else:
+                emoji = '⭐⚪'
+
+            if quality is not None:
+                text = f"  {rank:4d}. {time_str} | {emoji}{ftype} {size_kb:8.4f}KB ({ratio:6.2f}%) QP:{quality}"
+            else:
+                text = f"  {rank:4d}. {time_str} | {emoji}{ftype} {size_kb:8.4f}KB ({ratio:6.2f}%)"
+
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, idx)
+            self.reference_list.addItem(item)
 
     def update_size_stats(self):
         """용량 기준 통계 표시"""
@@ -354,7 +459,8 @@ class VideoFrameExtractor(QMainWindow):
                 'index': idx,
                 'type': info['type'],
                 'size': info['size'],
-                'quality': info['quality']
+                'quality': info['quality'],
+                'is_reference': info.get('is_reference', False)
             })
         all_frames_sorted.sort(key=lambda x: x['size'], reverse=True)
 
@@ -363,11 +469,16 @@ class VideoFrameExtractor(QMainWindow):
             ftype = frame['type']
             size = frame['size']
             quality = frame['quality']
+            is_ref = frame['is_reference']
 
             size_kb = size / 1024
             time_str = self.format_time_short(idx)
 
-            emoji = {'I': '🟢', 'P': '🔵', 'B': '🟠'}.get(ftype, '⚪')
+            # 참조 프레임은 별 표시
+            if is_ref:
+                emoji = {'I': '⭐🟢', 'P': '⭐🔵', 'B': '⭐🟠'}.get(ftype, '⭐⚪')
+            else:
+                emoji = {'I': '🟢', 'P': '🔵', 'B': '🟠'}.get(ftype, '⚪')
 
             if quality is not None:
                 text = f"  {rank:2d}. {time_str} | {emoji}{ftype} {size_kb:10.4f}KB QP:{quality}"
@@ -424,11 +535,16 @@ class VideoFrameExtractor(QMainWindow):
             ftype = self.frame_info[idx]['type']
             size = self.frame_info[idx]['size']
             size_kb = size / 1024
+            is_ref = self.frame_info[idx].get('is_reference', False)
 
             avg_size = self.avg_sizes.get(ftype, 1)
             ratio = (size / avg_size) * 100 if avg_size > 0 else 100
 
-            emoji = {'I': '🟢', 'P': '🔵', 'B': '🟠'}.get(ftype, '⚪')
+            # 참조 프레임은 별 표시
+            if is_ref:
+                emoji = {'I': '⭐🟢', 'P': '⭐🔵', 'B': '⭐🟠'}.get(ftype, '⭐⚪')
+            else:
+                emoji = {'I': '🟢', 'P': '🔵', 'B': '🟠'}.get(ftype, '⚪')
 
             text = f"  {rank:4d}. {time_str} | {emoji}{ftype} 선명:{sharpness:8.1f} {size_kb:8.4f}KB ({ratio:6.2f}%)"
 
@@ -446,7 +562,8 @@ class VideoFrameExtractor(QMainWindow):
                 frames_by_type[frame_type].append({
                     'index': idx,
                     'size': info['size'],
-                    'quality': info['quality']
+                    'quality': info['quality'],
+                    'is_reference': info.get('is_reference', False)
                 })
 
         # I, P는 큰 것부터, B는 작은 것부터 정렬
@@ -506,15 +623,19 @@ class VideoFrameExtractor(QMainWindow):
                     idx = frame['index']
                     size = frame['size']
                     quality = frame['quality']
+                    is_ref = frame['is_reference']
 
                     size_kb = size / 1024
                     ratio = (size / avg_size) * 100 if avg_size > 0 else 100
                     time_str = self.format_time_short(idx)
 
+                    # 참조 프레임 표시
+                    ref_mark = '⭐' if is_ref else '  '
+
                     if quality is not None:
-                        text = f"  {rank:2d}. {time_str} | {size_kb:10.4f}KB ({ratio:6.2f}%) QP:{quality}"
+                        text = f"{ref_mark}{rank:2d}. {time_str} | {size_kb:10.4f}KB ({ratio:6.2f}%) QP:{quality}"
                     else:
-                        text = f"  {rank:2d}. {time_str} | {size_kb:10.4f}KB ({ratio:6.2f}%)"
+                        text = f"{ref_mark}{rank:2d}. {time_str} | {size_kb:10.4f}KB ({ratio:6.2f}%)"
 
                     item = QListWidgetItem(text)
                     item.setData(Qt.UserRole, idx)
@@ -547,13 +668,12 @@ class VideoFrameExtractor(QMainWindow):
         # 통계 표시
         self.update_size_stats()
         self.update_sharpness_stats()
+        self.update_reference_stats()
 
         self.statusBar().showMessage('', 0)
 
-        # 10ms 단위로 슬라이더 설정
-        total_time_ms = int((self.total_frames / self.fps) * 100)
-
-        self.timeline_slider.setMaximum(total_time_ms)
+        # 프레임 단위로 슬라이더 설정
+        self.timeline_slider.setMaximum(self.total_frames - 1)
         self.timeline_slider.setEnabled(True)
         self.timeline_slider.setValue(0)
         self.capture_button.setEnabled(True)
@@ -595,6 +715,7 @@ class VideoFrameExtractor(QMainWindow):
             frame_type = '?'
             frame_size = 0
             quality = None
+            is_reference = False
             color = '#757575'
 
             if 0 <= frame_number < len(self.frame_info):
@@ -602,6 +723,7 @@ class VideoFrameExtractor(QMainWindow):
                 frame_type = info['type']
                 frame_size = info['size']
                 quality = info['quality']
+                is_reference = info.get('is_reference', False)
 
                 avg_size = self.avg_sizes.get(frame_type, 1)
                 quality_ratio = (frame_size / avg_size) * 100 if avg_size > 0 else 100
@@ -641,10 +763,13 @@ class VideoFrameExtractor(QMainWindow):
                 avg_size = self.avg_sizes.get(frame_type, 1)
                 quality_ratio = (frame_size / avg_size) * 100 if avg_size > 0 else 100
 
+                # 참조 프레임 표시
+                ref_text = ' [참조⭐]' if is_reference else ''
+
                 self.time_label.setText(
                     f'{self.format_time(current_time)} / {self.format_time(total_time)} '
                     f'<span style="color: {color}; font-weight: bold;">'
-                    f'● {frame_type} ({size_kb:.4f}KB, {quality_ratio:.2f}%{qp_text})</span>'
+                    f'● {frame_type} ({size_kb:.4f}KB, {quality_ratio:.2f}%{qp_text}){ref_text}</span>'
                 )
             else:
                 self.time_label.setText(
@@ -664,9 +789,8 @@ class VideoFrameExtractor(QMainWindow):
         return f'{hours:02d}:{minutes:02d}:{secs:02d}.{millisecs:03d}'
 
     def on_slider_change(self, value):
-        time_seconds = value / 100.0
-        frame_number = int(time_seconds * self.fps)
-        frame_number = min(frame_number, self.total_frames - 1)
+        # 슬라이더 값이 이미 프레임 번호
+        frame_number = min(value, self.total_frames - 1)
         self.show_frame(frame_number)
 
     def keyPressEvent(self, event):
@@ -676,16 +800,22 @@ class VideoFrameExtractor(QMainWindow):
         current_value = self.timeline_slider.value()
 
         if event.key() == Qt.Key_Left:
+            # 1프레임 뒤로
             new_value = max(0, current_value - 1)
             self.timeline_slider.setValue(new_value)
         elif event.key() == Qt.Key_Right:
+            # 1프레임 앞으로
             new_value = min(self.timeline_slider.maximum(), current_value + 1)
             self.timeline_slider.setValue(new_value)
         elif event.key() == Qt.Key_Up:
-            new_value = min(self.timeline_slider.maximum(), current_value + 100)
+            # 1초(fps) 앞으로
+            jump = int(self.fps) if self.fps > 0 else 30
+            new_value = min(self.timeline_slider.maximum(), current_value + jump)
             self.timeline_slider.setValue(new_value)
         elif event.key() == Qt.Key_Down:
-            new_value = max(0, current_value - 100)
+            # 1초(fps) 뒤로
+            jump = int(self.fps) if self.fps > 0 else 30
+            new_value = max(0, current_value - jump)
             self.timeline_slider.setValue(new_value)
         else:
             super().keyPressEvent(event)
