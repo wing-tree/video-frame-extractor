@@ -1,16 +1,45 @@
+import json
+import subprocess
 import sys
-import cv2
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
+
+import cv2
+import numpy as np
+from PIL import Image
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QImage, QPixmap, QDragEnterEvent, QDropEvent, QFont
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QSlider, QLabel,
-                             QFileDialog, QMessageBox, QScrollArea, QTextEdit,
-                             QSplitter, QListWidget, QListWidgetItem, QTabWidget)
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap, QDragEnterEvent, QDropEvent, QFont
-from PIL import Image
-import numpy as np
-import subprocess
-import json
+                             QFileDialog, QMessageBox, QScrollArea, QSplitter, QListWidget, QListWidgetItem, QTabWidget)
+
+
+def analyze_sharpness_chunk(args):
+    """청크 단위로 선명도 분석 (별도 프로세스)"""
+    video_path, chunk_indices = args
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return []
+
+    results = []
+
+    for idx in chunk_indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+
+        if ret and frame is not None:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+            sharpness = laplacian.var()
+
+            results.append({
+                'frame_index': idx,
+                'sharpness': sharpness
+            })
+
+    cap.release()
+    return results
 
 
 class VideoFrameExtractor(QMainWindow):
@@ -22,9 +51,9 @@ class VideoFrameExtractor(QMainWindow):
         self.fps = 0
         self.video_path = None
         self.last_frame_number = -1
-        self.frame_info = []  # 프레임 정보 리스트 (타입, 크기, QP, 참조여부)
-        self.avg_sizes = {}  # 타입별 평균 크기
-        self.sharpness_metrics = []  # 선명도 메트릭 리스트
+        self.frame_info = []
+        self.avg_sizes = {}
+        self.sharpness_metrics = []
 
         self.init_ui()
         self.setFocusPolicy(Qt.StrongFocus)
@@ -33,24 +62,20 @@ class VideoFrameExtractor(QMainWindow):
         self.setWindowTitle('비디오 프레임 추출기')
         self.setGeometry(100, 100, 1800, 800)
 
-        # 메인 위젯
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
 
-        # 스플리터로 좌우 분할
         splitter = QSplitter(Qt.Horizontal)
 
         # 왼쪽: 비디오 영역
         left_widget = QWidget()
         layout = QVBoxLayout(left_widget)
 
-        # 스크롤 영역 추가
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(False)
         scroll_area.setAlignment(Qt.AlignCenter)
 
-        # 드래그 앤 드롭 영역 / 비디오 표시 영역
         self.video_label = QLabel('비디오 파일을 여기에 드래그하세요')
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setMinimumSize(800, 600)
@@ -67,13 +92,11 @@ class VideoFrameExtractor(QMainWindow):
         scroll_area.setWidget(self.video_label)
         layout.addWidget(scroll_area)
 
-        # 타임 정보 레이블
         self.time_label = QLabel('00:00:00.000 / 00:00:00.000')
         self.time_label.setAlignment(Qt.AlignCenter)
         self.time_label.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addWidget(self.time_label)
 
-        # 타임라인 슬라이더
         self.timeline_slider = QSlider(Qt.Horizontal)
         self.timeline_slider.setMinimum(0)
         self.timeline_slider.setMaximum(0)
@@ -81,14 +104,13 @@ class VideoFrameExtractor(QMainWindow):
         self.timeline_slider.valueChanged.connect(self.on_slider_change)
         layout.addWidget(self.timeline_slider)
 
-        # 컨트롤 버튼들
         control_layout = QHBoxLayout()
 
         self.open_button = QPushButton('파일 열기')
         self.open_button.clicked.connect(self.open_file)
         control_layout.addWidget(self.open_button)
 
-        self.capture_button = QPushButton('캡처 (WebP 저장)')
+        self.capture_button = QPushButton('캡처 (PNG 저장)')
         self.capture_button.setEnabled(False)
         self.capture_button.clicked.connect(self.capture_frame)
         self.capture_button.setStyleSheet("""
@@ -111,31 +133,26 @@ class VideoFrameExtractor(QMainWindow):
 
         layout.addLayout(control_layout)
 
-        # 오른쪽: 통계 영역 (탭으로 구성)
+        # 오른쪽: 통계 영역
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
 
-        # 탭 위젯 생성
         self.tab_widget = QTabWidget()
 
-        # 탭 1: 용량 기준 순위
         self.size_list = QListWidget()
         self.setup_list_widget(self.size_list)
         self.tab_widget.addTab(self.size_list, "📦 용량 기준")
 
-        # 탭 2: 선명도 기준 순위
         self.sharpness_list = QListWidget()
         self.setup_list_widget(self.sharpness_list)
         self.tab_widget.addTab(self.sharpness_list, "🔍 선명도 기준")
 
-        # 탭 3: 참조 프레임
         self.reference_list = QListWidget()
         self.setup_list_widget(self.reference_list)
         self.tab_widget.addTab(self.reference_list, "🎯 참조 프레임")
 
         right_layout.addWidget(self.tab_widget)
 
-        # 스플리터에 추가
         splitter.addWidget(left_widget)
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 2)
@@ -143,13 +160,11 @@ class VideoFrameExtractor(QMainWindow):
 
         main_layout.addWidget(splitter)
 
-        # 드래그 앤 드롭 활성화
         self.setAcceptDrops(True)
 
     def setup_list_widget(self, list_widget):
-        """리스트 위젯 공통 설정"""
         list_widget.setMinimumWidth(450)
-        font = QFont("Monospace")
+        font = QFont("SF Mono")
         font.setStyleHint(QFont.TypeWriter)
         font.setPointSize(10)
         list_widget.setFont(font)
@@ -173,7 +188,6 @@ class VideoFrameExtractor(QMainWindow):
             }
         """)
         list_widget.itemClicked.connect(self.on_stats_item_clicked)
-        # 키보드로 항목 포커스 변경시에도 프레임 이동
         list_widget.currentItemChanged.connect(self.on_stats_item_changed)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -196,12 +210,6 @@ class VideoFrameExtractor(QMainWindow):
         )
         if file_name:
             self.load_video(file_name)
-
-    def calculate_sharpness(self, frame):
-        """프레임의 선명도 계산"""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        return laplacian_var
 
     def analyze_frame_quality(self, video_path):
         """비디오의 모든 프레임 타입, 크기, QP, 참조여부 분석"""
@@ -230,8 +238,6 @@ class VideoFrameExtractor(QMainWindow):
                 if quality is not None and not has_quality:
                     has_quality = True
 
-                # I-frame은 항상 참조 프레임
-                # P/B-frame도 크기가 평균보다 크면 참조 프레임일 가능성 높음
                 is_reference = (frame_type == 'I' or key_frame == 1)
 
                 info = {
@@ -243,7 +249,6 @@ class VideoFrameExtractor(QMainWindow):
                 }
                 frame_info.append(info)
 
-            # 통계 출력
             i_count = sum(1 for f in frame_info if f['type'] == 'I')
             p_count = sum(1 for f in frame_info if f['type'] == 'P')
             b_count = sum(1 for f in frame_info if f['type'] == 'B')
@@ -254,7 +259,7 @@ class VideoFrameExtractor(QMainWindow):
             if has_quality:
                 print(f"[INFO] QP 값 지원됨")
             else:
-                print(f"[INFO] QP 값 미지원 (크기만 사용)")
+                print(f"[INFO] QP 값 미지원")
 
             # 타입별 평균 크기 계산
             sizes_by_type = {'I': [], 'P': [], 'B': []}
@@ -268,8 +273,7 @@ class VideoFrameExtractor(QMainWindow):
                 if sizes:
                     avg_sizes[ftype] = sum(sizes) / len(sizes)
 
-            # 평균 크기 기반으로 추가 참조 프레임 탐지
-            # P/B 프레임 중 평균보다 1.5배 이상 큰 것은 참조 프레임일 가능성
+            # 추가 참조 프레임 탐지
             for info in frame_info:
                 if info['type'] in ['P', 'B'] and not info['is_reference']:
                     avg = avg_sizes.get(info['type'], 0)
@@ -284,72 +288,90 @@ class VideoFrameExtractor(QMainWindow):
                       f"P: {avg_sizes.get('P', 0):.0f}B, "
                       f"B: {avg_sizes.get('B', 0):.0f}B")
 
-            # 선명도 분석
-            print("[INFO] 선명도 분석 중...")
-            sharpness_metrics = self.analyze_sharpness(video_path, frame_info)
+            # 선명도 병렬 분석
+            print("[INFO] 선명도 병렬 분석 시작...")
+            sharpness_metrics = self.analyze_sharpness_parallel(video_path, frame_info)
 
             return frame_info, avg_sizes, sharpness_metrics
 
         except Exception as e:
             print(f"[ERROR] ffprobe 실패: {e}")
-            print("[INFO] ffprobe가 설치되어 있지 않거나 실행할 수 없습니다.")
             return [], {}, []
 
-    def analyze_sharpness(self, video_path, frame_info):
-        """I-frame과 P-frame만 선명도 분석"""
-        cap = cv2.VideoCapture(video_path)
+    def analyze_sharpness_parallel(self, video_path, frame_info):
+        """멀티프로세싱으로 선명도 분석"""
 
-        if not cap.isOpened():
-            print("[ERROR] VideoCapture 열기 실패")
+        # I, P, B 프레임만 필터링
+        target_indices = [i for i, info in enumerate(frame_info)
+                          if info['type'] in ['I', 'P', 'B']]
+
+        if not target_indices:
+            print("[WARN] 분석할 프레임이 없음")
             return []
 
-        # I, P 프레임만 필터링
-        ip_frame_indices = [i for i, info in enumerate(frame_info)
-                            if info['type'] in ['I', 'P']]
+        print(f"[INFO] {len(target_indices)}개 프레임 병렬 분석 중...")
 
-        print(f"[INFO] {len(ip_frame_indices)}개 I/P 프레임 선명도 분석 중...")
+        # CPU 코어 수
+        num_processes = min(cpu_count(), 4)
 
-        sharpness_metrics = []
+        # 청크 나누기
+        chunk_size = max(1, len(target_indices) // num_processes)
+        chunks = []
 
-        for count, idx in enumerate(ip_frame_indices, 1):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
+        for i in range(num_processes):
+            start = i * chunk_size
+            if i < num_processes - 1:
+                end = start + chunk_size
+            else:
+                end = len(target_indices)
 
-            if ret and frame is not None:
-                sharpness = self.calculate_sharpness(frame)
-                sharpness_metrics.append({
-                    'frame_index': idx,
-                    'sharpness': sharpness
-                })
+            chunk_indices = target_indices[start:end]
 
-            if count % 100 == 0:
-                print(f"[INFO] {count}/{len(ip_frame_indices)} 분석 완료")
+            if chunk_indices:
+                # 절대 경로로 변환
+                abs_path = str(Path(video_path).resolve())
+                chunks.append((abs_path, chunk_indices))
 
-        cap.release()
-        print(f"[INFO] 최종 {len(sharpness_metrics)}개 프레임 분석 완료")
+        print(f"[INFO] {len(chunks)}개 청크로 분할")
 
-        return sharpness_metrics
+        # 병렬 처리
+        try:
+            with Pool(processes=len(chunks)) as pool:
+                results = pool.map(analyze_sharpness_chunk, chunks)
+
+            # 결과 병합
+            all_metrics = []
+            for chunk_result in results:
+                all_metrics.extend(chunk_result)
+
+            # 프레임 인덱스 순으로 정렬
+            all_metrics.sort(key=lambda x: x['frame_index'])
+
+            print(f"[INFO] 병렬 분석 완료: {len(all_metrics)}개 프레임")
+
+            return all_metrics
+
+        except Exception as e:
+            print(f"[ERROR] 병렬 처리 실패: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
 
     def format_time_short(self, frame_number):
-        """프레임 번호를 시간으로 변환 (짧은 형식)"""
         if self.fps == 0:
             return "00:00.000"
-
         seconds = frame_number / self.fps
         minutes = int(seconds // 60)
         secs = seconds % 60
         return f'{minutes:02d}:{secs:06.3f}'
 
     def on_stats_item_clicked(self, item):
-        """통계 항목 클릭 시 해당 프레임으로 이동"""
         frame_number = item.data(Qt.UserRole)
-
         if frame_number is not None:
             print(f"[INFO] 프레임 {frame_number}로 이동 ({self.format_time_short(frame_number)})")
             self.timeline_slider.setValue(frame_number)
 
     def on_stats_item_changed(self, current, previous):
-        """리스트 항목 포커스 변경시 (키보드 방향키 등) 프레임 이동"""
         if current is not None:
             frame_number = current.data(Qt.UserRole)
             if frame_number is not None:
@@ -357,7 +379,6 @@ class VideoFrameExtractor(QMainWindow):
                 self.timeline_slider.setValue(frame_number)
 
     def update_reference_stats(self):
-        """참조 프레임 통계 표시"""
         self.reference_list.clear()
 
         if not self.frame_info:
@@ -365,7 +386,6 @@ class VideoFrameExtractor(QMainWindow):
             self.reference_list.addItem(item)
             return
 
-        # 참조 프레임만 필터링
         ref_frames = []
         for idx, info in enumerate(self.frame_info):
             if info.get('is_reference', False):
@@ -376,14 +396,13 @@ class VideoFrameExtractor(QMainWindow):
                     'quality': info['quality']
                 })
 
-        # 헤더
         header = QListWidgetItem("=" * 65)
         header.setFlags(Qt.NoItemFlags)
         self.reference_list.addItem(header)
 
         title = QListWidgetItem(f"참조 프레임 목록 (총 {len(ref_frames)}개)")
         title.setFlags(Qt.NoItemFlags)
-        title.setFont(QFont("Monospace", 12, QFont.Bold))
+        title.setFont(QFont("SF Mono", 12, QFont.Bold))
         self.reference_list.addItem(title)
 
         subtitle = QListWidgetItem("(다른 프레임의 기점이 되는 프레임)")
@@ -398,7 +417,6 @@ class VideoFrameExtractor(QMainWindow):
         spacer.setFlags(Qt.NoItemFlags)
         self.reference_list.addItem(spacer)
 
-        # 참조 프레임 출력
         for rank, frame in enumerate(ref_frames, 1):
             idx = frame['index']
             ftype = frame['type']
@@ -411,7 +429,6 @@ class VideoFrameExtractor(QMainWindow):
             avg_size = self.avg_sizes.get(ftype, 1)
             ratio = (size / avg_size) * 100 if avg_size > 0 else 100
 
-            # 참조 프레임은 별 아이콘 추가
             if ftype == 'I':
                 emoji = '⭐🟢'
             elif ftype == 'P':
@@ -431,7 +448,6 @@ class VideoFrameExtractor(QMainWindow):
             self.reference_list.addItem(item)
 
     def update_size_stats(self):
-        """용량 기준 통계 표시"""
         self.size_list.clear()
 
         if not self.frame_info:
@@ -439,14 +455,13 @@ class VideoFrameExtractor(QMainWindow):
             self.size_list.addItem(item)
             return
 
-        # 전체 프레임 Top 15
         header = QListWidgetItem("=" * 65)
         header.setFlags(Qt.NoItemFlags)
         self.size_list.addItem(header)
 
         all_frames_title = QListWidgetItem("전체 프레임 TOP 15 (용량 기준)")
         all_frames_title.setFlags(Qt.NoItemFlags)
-        all_frames_title.setFont(QFont("Monospace", 11, QFont.Bold))
+        all_frames_title.setFont(QFont("SF Mono", 11, QFont.Bold))
         self.size_list.addItem(all_frames_title)
 
         header2 = QListWidgetItem("=" * 65)
@@ -474,7 +489,6 @@ class VideoFrameExtractor(QMainWindow):
             size_kb = size / 1024
             time_str = self.format_time_short(idx)
 
-            # 참조 프레임은 별 표시
             if is_ref:
                 emoji = {'I': '⭐🟢', 'P': '⭐🔵', 'B': '⭐🟠'}.get(ftype, '⭐⚪')
             else:
@@ -489,11 +503,9 @@ class VideoFrameExtractor(QMainWindow):
             item.setData(Qt.UserRole, idx)
             self.size_list.addItem(item)
 
-        # 타입별 추가
         self._add_type_based_stats(self.size_list)
 
     def update_sharpness_stats(self):
-        """선명도 기준 통계 표시"""
         self.sharpness_list.clear()
 
         if not self.sharpness_metrics:
@@ -501,17 +513,15 @@ class VideoFrameExtractor(QMainWindow):
             self.sharpness_list.addItem(item)
             return
 
-        # 선명도 순으로 정렬
         sorted_metrics = sorted(self.sharpness_metrics, key=lambda x: x['sharpness'], reverse=True)
 
-        # 전체 프레임 선명도 순위
         header = QListWidgetItem("=" * 65)
         header.setFlags(Qt.NoItemFlags)
         self.sharpness_list.addItem(header)
 
         title = QListWidgetItem("전체 프레임 선명도 순위")
         title.setFlags(Qt.NoItemFlags)
-        title.setFont(QFont("Monospace", 12, QFont.Bold))
+        title.setFont(QFont("SF Mono", 12, QFont.Bold))
         self.sharpness_list.addItem(title)
 
         subtitle = QListWidgetItem("(높을수록 선명함)")
@@ -526,7 +536,6 @@ class VideoFrameExtractor(QMainWindow):
         spacer.setFlags(Qt.NoItemFlags)
         self.sharpness_list.addItem(spacer)
 
-        # 모든 프레임 표시
         for rank, metrics in enumerate(sorted_metrics, 1):
             idx = metrics['frame_index']
             sharpness = metrics['sharpness']
@@ -540,20 +549,18 @@ class VideoFrameExtractor(QMainWindow):
             avg_size = self.avg_sizes.get(ftype, 1)
             ratio = (size / avg_size) * 100 if avg_size > 0 else 100
 
-            # 참조 프레임은 별 표시
             if is_ref:
                 emoji = {'I': '⭐🟢', 'P': '⭐🔵', 'B': '⭐🟠'}.get(ftype, '⭐⚪')
             else:
                 emoji = {'I': '🟢', 'P': '🔵', 'B': '🟠'}.get(ftype, '⚪')
 
-            text = f"  {rank:4d}. {time_str} | {emoji}{ftype} 선명:{sharpness:8.1f} {size_kb:8.4f}KB ({ratio:6.2f}%)"
+            text = f"  {rank:4d}. {time_str} | {emoji}{ftype} 선명:{sharpness:8.4f} {size_kb:8.4f}KB ({ratio:6.2f}%)"
 
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, idx)
             self.sharpness_list.addItem(item)
 
     def _add_type_based_stats(self, list_widget):
-        """타입별 통계 추가"""
         frames_by_type = {'I': [], 'P': [], 'B': []}
 
         for idx, info in enumerate(self.frame_info):
@@ -566,10 +573,9 @@ class VideoFrameExtractor(QMainWindow):
                     'is_reference': info.get('is_reference', False)
                 })
 
-        # I, P는 큰 것부터, B는 작은 것부터 정렬
         frames_by_type['I'].sort(key=lambda x: x['size'], reverse=True)
         frames_by_type['P'].sort(key=lambda x: x['size'], reverse=True)
-        frames_by_type['B'].sort(key=lambda x: x['size'])  # 작은 순
+        frames_by_type['B'].sort(key=lambda x: x['size'])
 
         spacer = QListWidgetItem("")
         spacer.setFlags(Qt.NoItemFlags)
@@ -584,7 +590,7 @@ class VideoFrameExtractor(QMainWindow):
 
         title = QListWidgetItem("타입별 프레임 순위")
         title.setFlags(Qt.NoItemFlags)
-        title.setFont(QFont("Monospace", 11, QFont.Bold))
+        title.setFont(QFont("SF Mono", 11, QFont.Bold))
         list_widget.addItem(title)
 
         header2 = QListWidgetItem("=" * 65)
@@ -604,7 +610,7 @@ class VideoFrameExtractor(QMainWindow):
 
             type_header = QListWidgetItem(f"{color_emoji} {label} TOP 50 ({desc})")
             type_header.setFlags(Qt.NoItemFlags)
-            type_header.setFont(QFont("Monospace", 10, QFont.Bold))
+            type_header.setFont(QFont("SF Mono", 10, QFont.Bold))
             list_widget.addItem(type_header)
 
             divider = QListWidgetItem("-" * 65)
@@ -616,7 +622,7 @@ class VideoFrameExtractor(QMainWindow):
                 no_data.setFlags(Qt.NoItemFlags)
                 list_widget.addItem(no_data)
             else:
-                top_frames = frames[:50]  # 50개로 증가
+                top_frames = frames[:50]
                 avg_size = self.avg_sizes.get(ftype, 1)
 
                 for rank, frame in enumerate(top_frames, 1):
@@ -629,7 +635,6 @@ class VideoFrameExtractor(QMainWindow):
                     ratio = (size / avg_size) * 100 if avg_size > 0 else 100
                     time_str = self.format_time_short(idx)
 
-                    # 참조 프레임 표시
                     ref_mark = '⭐' if is_ref else '  '
 
                     if quality is not None:
@@ -659,20 +664,17 @@ class VideoFrameExtractor(QMainWindow):
         self.total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.video_capture.get(cv2.CAP_PROP_FPS)
 
-        # 프레임 품질 분석
         self.statusBar().showMessage('프레임 분석 중...', 0)
         QApplication.processEvents()
 
         self.frame_info, self.avg_sizes, self.sharpness_metrics = self.analyze_frame_quality(video_path)
 
-        # 통계 표시
         self.update_size_stats()
         self.update_sharpness_stats()
         self.update_reference_stats()
 
         self.statusBar().showMessage('', 0)
 
-        # 프레임 단위로 슬라이더 설정
         self.timeline_slider.setMaximum(self.total_frames - 1)
         self.timeline_slider.setEnabled(True)
         self.timeline_slider.setValue(0)
@@ -763,7 +765,6 @@ class VideoFrameExtractor(QMainWindow):
                 avg_size = self.avg_sizes.get(frame_type, 1)
                 quality_ratio = (frame_size / avg_size) * 100 if avg_size > 0 else 100
 
-                # 참조 프레임 표시
                 ref_text = ' [참조⭐]' if is_reference else ''
 
                 self.time_label.setText(
@@ -777,7 +778,7 @@ class VideoFrameExtractor(QMainWindow):
                 )
 
         except Exception as e:
-            print(f"[CRASH] show_frame 에러: {e}")
+            print(f"[ERROR] show_frame: {e}")
             import traceback
             traceback.print_exc()
 
@@ -789,7 +790,6 @@ class VideoFrameExtractor(QMainWindow):
         return f'{hours:02d}:{minutes:02d}:{secs:02d}.{millisecs:03d}'
 
     def on_slider_change(self, value):
-        # 슬라이더 값이 이미 프레임 번호
         frame_number = min(value, self.total_frames - 1)
         self.show_frame(frame_number)
 
@@ -800,20 +800,16 @@ class VideoFrameExtractor(QMainWindow):
         current_value = self.timeline_slider.value()
 
         if event.key() == Qt.Key_Left:
-            # 1프레임 뒤로
             new_value = max(0, current_value - 1)
             self.timeline_slider.setValue(new_value)
         elif event.key() == Qt.Key_Right:
-            # 1프레임 앞으로
             new_value = min(self.timeline_slider.maximum(), current_value + 1)
             self.timeline_slider.setValue(new_value)
         elif event.key() == Qt.Key_Up:
-            # 1초(fps) 앞으로
             jump = int(self.fps) if self.fps > 0 else 30
             new_value = min(self.timeline_slider.maximum(), current_value + jump)
             self.timeline_slider.setValue(new_value)
         elif event.key() == Qt.Key_Down:
-            # 1초(fps) 뒤로
             jump = int(self.fps) if self.fps > 0 else 30
             new_value = max(0, current_value - jump)
             self.timeline_slider.setValue(new_value)
@@ -833,15 +829,14 @@ class VideoFrameExtractor(QMainWindow):
             default_name = f'frame_{current_frame_num:06d}.webp'
 
         save_path, _ = QFileDialog.getSaveFileName(
-            self, '프레임 저장', default_name, 'WebP Files (*.webp)'
+            self, '프레임 저장', default_name, 'webp Files (*.webp)'
         )
 
         if save_path:
             try:
                 frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
                 pil_image = Image.fromarray(frame_rgb)
-                pil_image = pil_image.convert('RGB')
-                pil_image.save(save_path, 'webp', quality=75, method=6)
+                pil_image.save(save_path, 'WebP', quality=75, method=6)
 
                 self.statusBar().showMessage(f'프레임 저장 완료: {save_path}', 1500)
             except Exception as e:
@@ -861,4 +856,7 @@ def main():
 
 
 if __name__ == '__main__':
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     main()
