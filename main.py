@@ -842,6 +842,34 @@ class VideoFrameExtractor(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, '오류', f'저장 실패:\n{str(e)}')
 
+        self.capture_frame_png()
+
+    def capture_frame_png(self):
+        if self.current_frame is None:
+            QMessageBox.warning(self, '오류', '캡처할 프레임이 없습니다.')
+            return
+
+        if self.video_path:
+            video_filename = Path(self.video_path).stem
+            default_name = f'{video_filename}.png'
+        else:
+            current_frame_num = self.timeline_slider.value()
+            default_name = f'frame_{current_frame_num:06d}.png'
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, '프레임 저장', default_name, 'png Files (*.png)'
+        )
+
+        if save_path:
+            try:
+                frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(frame_rgb)
+                pil_image.save(save_path, 'PNG')
+
+                self.statusBar().showMessage(f'PNG 프레임 저장 완료: {save_path}', 1500)
+            except Exception as e:
+                QMessageBox.critical(self, '오류', f'저장 실패:\n{str(e)}')
+
     def closeEvent(self, event):
         if self.video_capture:
             self.video_capture.release()
