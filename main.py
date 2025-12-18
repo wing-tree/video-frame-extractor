@@ -14,6 +14,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QFileDialog, QMessageBox, QScrollArea, QSplitter, QListWidget, QListWidgetItem, QTabWidget)
 
 
+VERSION = "20251218"
+
 def analyze_sharpness_chunk(args):
     """청크 단위로 선명도 분석 (별도 프로세스)"""
     video_path, chunk_indices = args
@@ -828,8 +830,10 @@ class VideoFrameExtractor(QMainWindow):
             current_frame_num = self.timeline_slider.value()
             default_name = f'frame_{current_frame_num:06d}.webp'
 
+        project_dir = Path(__file__).parent / VERSION
+        project_dir.mkdir(exist_ok=True)
         save_path, _ = QFileDialog.getSaveFileName(
-            self, '프레임 저장', default_name, 'webp Files (*.webp)'
+            self, '프레임 저장', f'{project_dir}/{default_name}', 'webp Files (*.webp)'
         )
 
         if save_path:
@@ -856,8 +860,10 @@ class VideoFrameExtractor(QMainWindow):
             current_frame_num = self.timeline_slider.value()
             default_name = f'frame_{current_frame_num:06d}.png'
 
+        project_dir = Path(__file__).parent / VERSION
+        project_dir.mkdir(exist_ok=True)
         save_path, _ = QFileDialog.getSaveFileName(
-            self, '프레임 저장', default_name, 'png Files (*.png)'
+            self, '프레임 저장', f'{project_dir}/{default_name}', 'png Files (*.png)'
         )
 
         if save_path:
