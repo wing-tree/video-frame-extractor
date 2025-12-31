@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QFileDialog, QMessageBox, QScrollArea, QSplitter, QListWidget, QListWidgetItem, QTabWidget)
 
 
-VERSION = "20251226"
+VERSION = "20251231"
 
 def analyze_sharpness_chunk(args):
     """청크 단위로 선명도 분석 (별도 프로세스)"""
