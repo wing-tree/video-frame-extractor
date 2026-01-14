@@ -5,7 +5,6 @@ from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import cv2
-import numpy as np
 from PIL import Image
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap, QDragEnterEvent, QDropEvent, QFont
@@ -14,7 +13,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QFileDialog, QMessageBox, QScrollArea, QSplitter, QListWidget, QListWidgetItem, QTabWidget)
 
 
-VERSION = "20260109"
+VERSION = "20260114"
 
 def analyze_sharpness_chunk(args):
     """청크 단위로 선명도 분석 (별도 프로세스)"""
