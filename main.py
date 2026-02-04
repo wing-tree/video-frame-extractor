@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QFileDialog, QMessageBox, QScrollArea, QSplitter, QListWidget, QListWidgetItem, QTabWidget)
 
 
-VERSION = "20260127"
+VERSION = "20260204"
 
 def analyze_sharpness_chunk(args):
     """청크 단위로 선명도 분석 (별도 프로세스)"""
@@ -837,15 +837,24 @@ class VideoFrameExtractor(QMainWindow):
 
         if save_path:
             try:
+                # 1. OpenCV BGR을 RGB로 변환 및 PIL 객체 생성
                 frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
                 pil_image = Image.fromarray(frame_rgb)
+
+                # 2. 리사이징 로직 추가 (최대 384px)
+                max_size = 384
+                # thumbnail은 원본 비율을 유지하며, 이미지의 가로/세로 중 큰 쪽을 max_size에 맞춥니다.
+                # 이미 384보다 작다면 아무 작업도 하지 않습니다.
+                pil_image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+
+                # 3. 저장 (WebP)
                 pil_image.save(save_path, 'WebP', quality=75, method=6)
 
-                self.statusBar().showMessage(f'프레임 저장 완료: {save_path}', 1500)
+                self.statusBar().showMessage(f'프레임 저장 완료 (리사이징 적용): {save_path}', 1500)
             except Exception as e:
                 QMessageBox.critical(self, '오류', f'저장 실패:\n{str(e)}')
 
-        self.capture_frame_png()
+        # self.capture_frame_png()
 
     def capture_frame_png(self):
         if self.current_frame is None:
